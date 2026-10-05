@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="ka">
+<head>
+    <meta charset="utf-8">
+    <title>საწყობის WMS რუკა და მართვა</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+    <!-- Topbar -->
+    <header class="topbar">
+        <div class="topbar-brand">
+            <h1>🏭 საწყობის WMS ვებ რუკა</h1>
+            <div class="sub">თაროების 2D მატრიცა (Bay × Level), დატვირთულობის ანალიზი და პროდუქციის ლოკაციები</div>
+        </div>
+        <div class="topbar-actions">
+            <button class="btn btn-primary" onclick="openUploadModal()">🚀 რუკის აგება (Excel)</button>
+            <button class="btn" onclick="loadSampleData()">🧪 დემო საწყობის ჩატვირთვა</button>
+            <button class="btn" onclick="reloadData()">🔄 განახლება</button>
+            <button class="btn btn-success" onclick="saveCurrentMap()">💾 რუკის შენახვა</button>
+        </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs-container">
+        <button class="tab-btn active" data-tab="mapPage">🏭 საწყობის რუკა</button>
+        <button class="tab-btn" data-tab="locationsPage">📍 ლოკაციების ცხრილი</button>
+        <button class="tab-btn" data-tab="scoresPage">⚙️ კატეგორიის ქულები</button>
+    </nav>
+
+    <!-- Main Container -->
+    <main class="main-content">
+        
+        <!-- Status Notification Banner -->
+        <div id="statusBanner" class="status-banner"></div>
+
+        <!-- Global KPI Statistics Cards -->
+        <section class="stats-grid">
+            <div class="stat-card blue">
+                <div class="label">სულ ლოკაციები</div>
+                <div class="value" id="statLocations">-</div>
+            </div>
+            <div class="stat-card green">
+                <div class="label">დაკავებული უჯრები</div>
+                <div class="value" id="statOccupied">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">ცარიელი უჯრები</div>
+                <div class="value" id="statEmpty">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">სულ რაოდენობა (ნაშთი)</div>
+                <div class="value" id="statQty">-</div>
+            </div>
+            <div class="stat-card red">
+                <div class="label">გადასაწყობი (გადავსებული)</div>
+                <div class="value" id="statRed">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">კატალოგის გასაღებები</div>
+                <div class="value" id="statCatalog">-</div>
+            </div>
+        </section>
+
+        <!-- TAB 1: Warehouse Interactive Map -->
+        <section id="mapPage" class="page active">
+            <div class="panel">
+                <!-- Filters Toolbar -->
+                <div class="toolbar" style="margin-bottom: 14px;">
+                    <div class="field-group" style="min-width: 220px;">
+                        <label>🏢 რიგი (Bank)</label>
+                        <select id="bankFilter">
+                            <option value="">ყველა რიგი (Floorplan)</option>
+                        </select>
+                    </div>
+
+                    <div class="field-group" style="flex: 1; min-width: 240px;">
+                        <label>🔍 ძებნა (ლოკაცია, შტრიხკოდი, კატეგორია)</label>
+                        <input type="text" id="searchBox" placeholder="მაგ: 1UR_1_5_2, 4860001..., ქურთუკი">
+                    </div>
+
+                    <div class="field-group" style="min-width: 170px;">
+                        <label>🎨 ფერის ფილტრი</label>
+                        <select id="colorFilter">
+                            <option value="">ყველა სტატუსი</option>
+                            <option value="green">მწვანე — კარგი</option>
+                            <option value="yellow">ყვითელი — დასაკვირვებელი</option>
+                            <option value="red">წითელი — გადასაწყობი</option>
+                            <option value="gray">ნაცრისფერი — ცარიელი</option>
+                        </select>
+                    </div>
+
+                    <button class="btn" id="onlyOccupiedBtn" onclick="toggleOnlyOccupied()">
+                        🟢 მხოლოდ დაკავებული: OFF
+                    </button>
+
+                    <div class="field-group" style="min-width: 190px;">
+                        <label>სორტირება</label>
+                        <select id="sortMode">
+                            <option value="bank">Bank / Bay / Level</option>
+                            <option value="qty_desc">რაოდენობა: მეტი → ნაკლები</option>
+                            <option value="qty_asc">რაოდენობა: ნაკლები → მეტი</option>
+                            <option value="score_desc">ქულა: მეტი → ნაკლები</option>
+                            <option value="score_asc">ქულა: ნაკლები → მეტი</option>
+                            <option value="status">სტატუსის მიხედვით</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Controls Bar: View Mode Switcher & Legend -->
+                <div class="map-controls-bar">
+                    <div class="view-mode-toggle">
+                        <button class="view-mode-btn active" data-mode="floor" onclick="setViewMode('floor')">
+                            🏢 საწყობის გეგმა (Floorplan)
+                        </button>
+                        <button class="view-mode-btn" data-mode="matrix" onclick="setViewMode('matrix')">
+                            🧱 თაროს მატრიცა (Bay × Level)
+                        </button>
+                        <button class="view-mode-btn" data-mode="list" onclick="setViewMode('list')">
+                            📋 ბარათების სია
+                        </button>
+                    </div>
+
+                    <div class="map-legend">
+                        <span class="legend-item"><i class="legend-dot dot-green"></i> კარგი</span>
+                        <span class="legend-item"><i class="legend-dot dot-yellow"></i> დასაკვირვებელი (≥70%)</span>
+                        <span class="legend-item"><i class="legend-dot dot-red"></i> გადასაწყობი (&gt;ლიმიტი)</span>
+                        <span class="legend-item"><i class="legend-dot dot-gray"></i> ცარიელი</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Viewport for Floorplan / Rack Matrix / List -->
+            <div class="map-viewport">
+                <div id="mapContainer"></div>
+            </div>
+
+            <!-- Pagination Bar for List View -->
+            <div id="mapPaginationRow" class="panel" style="display: none; justify-content: space-between; align-items: center; margin-top: 12px;">
+                <div id="mapPageInfo" style="font-size: 12px; color: var(--text-muted);"></div>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-sm" onclick="prevListPage()">⟨ წინა</button>
+                    <button class="btn btn-sm" onclick="nextListPage()">შემდეგ ⟩</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 2: Locations Table -->
+        <section id="locationsPage" class="page">
+            <div class="panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px;">
+                    <div>
+                        <h3 style="font-size: 16px; font-weight: 800;">📍 საწყობის ლოკაციების ცხრილი</h3>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                            დააწკაპუნეთ ნებისმიერ ჩანაწერზე დეტალების და პროდუქციის სანახავად
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span id="locPageInfo" style="font-size: 12px; color: var(--text-muted); margin-right: 8px;"></span>
+                        <button class="btn btn-sm" onclick="prevLocPage()">⟨ წინა</button>
+                        <button class="btn btn-sm" onclick="nextLocPage()">შემდეგ ⟩</button>
+                    </div>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>ლოკაციის კოდი</th>
+                                <th>რიგი (Bank)</th>
+                                <th>Bay (სექცია)</th>
+                                <th>Level (იარუსი)</th>
+                                <th>ნაშთი (Qty)</th>
+                                <th>ქულა / ლიმიტი</th>
+                                <th>სტატუსი</th>
+                                <th>კატეგორიები</th>
+                            </tr>
+                        </thead>
+                        <tbody id="locationsTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 3: Category Scores -->
+        <section id="scoresPage" class="page">
+            <div class="panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                    <div>
+                        <h3 style="font-size: 16px; font-weight: 800;">⚙️ კატეგორიების ქულების მართვა</h3>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                            თითოეული პროდუქტის კატეგორიას ენიჭება ქულა (წონა/მოცულობა), რომლითაც გამოითვლება თაროს დატვირთულობა
+                        </div>
+                    </div>
+                    <button class="btn btn-success" onclick="saveScoresFromTab()">💾 ქულების შენახვა და გადათვლა</button>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">
+                            ტექსტური რედაქტორი (Excel-იდან დაკოპირებული: კატეგორია [TAB ან :] ქულა)
+                        </label>
+                        <textarea id="scoresText2" style="width: 100%; height: 420px; font-family: monospace;"></textarea>
+                    </div>
+
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">
+                            მიმდინარე აქტიური ქულები
+                        </label>
+                        <div class="table-wrap" style="max-height: 420px;">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>კატეგორია</th>
+                                        <th>ერთეულის ქულა</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="scoresTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Slide-over Location Drawer -->
+    <div id="drawerBackdrop" class="drawer-backdrop" onclick="closeLocationDrawer()"></div>
+    <aside id="locationDrawer" class="drawer">
+        <div class="drawer-header">
+            <div id="drawerTitle" class="drawer-title">📍 ლოკაცია</div>
+            <button class="drawer-close" onclick="closeLocationDrawer()">✕</button>
+        </div>
+        <div id="drawerBody" class="drawer-body">
+            <!-- Dynamically populated -->
+        </div>
+    </aside>
+
+    <!-- Modal for Excel Upload & Build -->
+    <div id="uploadModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>🚀 საწყობის რუკის აგება / Excel ფაილების ატვირთვა</h3>
+                <button class="drawer-close" onclick="closeUploadModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="field-group" style="margin-bottom: 14px;">
+                    <label>📍 Locations Excel (თაროების და ლოკაციების სია)</label>
+                    <input type="file" id="modalLocationsFile" accept=".xlsx,.xlsm,.xls">
+                    <small style="color:var(--text-muted); font-size:11px;">ავტომატურად ამოიცნობს LocationCode, Bay, Level სვეტებს.</small>
+                </div>
+
+                <div class="field-group" style="margin-bottom: 14px;">
+                    <label>📦 Inventory Excel (მიმდინარე ნაშთები და შტრიხკოდები)</label>
+                    <input type="file" id="modalInventoryFile" accept=".xlsx,.xlsm,.xls">
+                    <small style="color:var(--text-muted); font-size:11px;">ავტომატურად ამოიცნობს Qty, Barcode და ლოკაციის ფორმატს.</small>
+                </div>
+
+                <div class="field-group" style="margin-bottom: 14px;">
+                    <label>📚 Catalog Excel / CSV (ბარკოდების და კატეგორიების შესაბამისობა)</label>
+                    <input type="file" id="modalCatalogFile" accept=".xlsx,.xlsm,.xls,.csv">
+                    <small style="color:var(--text-muted); font-size:11px;">C სვეტში ბარკოდი, G სვეტში კატეგორია.</small>
+                </div>
+
+                <div class="field-group">
+                    <label>⚙️ ქულები (არასავალდებულო, თუ გსურთ ჩანაცვლება)</label>
+                    <textarea id="modalScoresText" style="height: 90px;" placeholder="კატეგორია 1&#10;საკვები 3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeUploadModal()">გაუქმება</button>
+                <button id="buildSubmitBtn" class="btn btn-primary" onclick="executeBuild()">🚀 რუკის აგება</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
