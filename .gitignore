@@ -1,0 +1,24 @@
+# Data files (uploaded via web UI on the server)
+warehouse_locations.json
+warehouse_locations.json.bak
+warehouse_stock.json
+warehouse_stock.json.bak
+catalog.json
+catalog.json.bak
+category_scores.txt
+category_scores.txt.bak
+uploads/
+
+# Local tools
+cloudflared.exe
+start_public.bat
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Windows
+Thumbs.db
+desktop.ini
