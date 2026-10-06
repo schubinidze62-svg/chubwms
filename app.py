@@ -91,17 +91,37 @@ def _gh_api(method, path, payload=None):
 
 def gh_download_file(filename, local_path):
     """Download one file from GitHub to local disk."""
-    result = _gh_api("GET", filename)
-    if not result or "content" not in result:
+    if not GH_TOKEN or not GH_DATA_REPO:
         return False
+    # Use raw.githubusercontent.com which supports large files without 1MB API limit
+    url = f"https://raw.githubusercontent.com/{GH_DATA_REPO}/main/{filename}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "User-Agent": "ChubWMS",
+    })
     try:
-        content = base64.b64decode(result["content"])
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        with open(local_path, "wb") as f:
-            f.write(content)
-        return True
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            content = resp.read()
+            if content and len(content) > 5:
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, "wb") as f:
+                    f.write(content)
+                return True
     except Exception:
-        return False
+        pass
+
+    # Fallback to API if raw fails
+    result = _gh_api("GET", filename)
+    if result and "content" in result:
+        try:
+            content = base64.b64decode(result["content"])
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, "wb") as f:
+                f.write(content)
+            return True
+        except Exception:
+            pass
+    return False
 
 def gh_upload_file(filename, local_path):
     """Upload local file to GitHub (create or update)."""
@@ -120,12 +140,11 @@ def gh_upload_file(filename, local_path):
         pass
 
 def gh_sync_on_startup():
-    """Download all data files from GitHub if not present locally."""
+    """Download all data files from GitHub on startup."""
     if not GH_TOKEN or not GH_DATA_REPO:
         return
     for fname, local_path in _DATA_FILES:
-        if not os.path.isfile(local_path):
-            gh_download_file(fname, local_path)
+        gh_download_file(fname, local_path)
 
 def gh_push_file_async(local_path):
     """Push a file to GitHub in a background thread (non-blocking)."""
