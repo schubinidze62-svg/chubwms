@@ -3,6 +3,9 @@ import re
 import json
 import shutil
 import itertools
+import base64
+import threading
+import urllib.request
 from datetime import datetime
 
 import pandas as pd
@@ -29,8 +32,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Cloud deployment: use DATA_DIR env var for persistent storage (Render disk)
 # Locally: use BASE_DIR
-DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_DIR = os.environ.get("DATA_DIR")
+if not DATA_DIR:
+    DATA_DIR = BASE_DIR
+else:
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        DATA_DIR = os.path.join(BASE_DIR, "data")
+        os.makedirs(DATA_DIR, exist_ok=True)
 
 LOCATIONS_FILE = os.path.join(DATA_DIR, "warehouse_locations.json")
 LOCATIONS_BAK = os.path.join(DATA_DIR, "warehouse_locations.json.bak")
@@ -49,6 +59,83 @@ CATALOG_CATEGORY_COL = 6  # G
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 120 * 1024 * 1024
+
+# ---------------- GitHub Data Persistence ----------------
+# Stores data files in GitHub repo so data survives Render restarts
+GH_TOKEN = os.environ.get("GH_TOKEN", "")
+GH_DATA_REPO = os.environ.get("GH_DATA_REPO", "")   # e.g. "schubinidze62-svg/chubwms-data"
+
+_DATA_FILES = [
+    ("warehouse_locations.json", LOCATIONS_FILE),
+    ("warehouse_stock.json", STOCK_FILE),
+    ("catalog.json", CATALOG_FILE),
+    ("category_scores.txt", SCORES_FILE),
+]
+
+def _gh_api(method, path, payload=None):
+    if not GH_TOKEN or not GH_DATA_REPO:
+        return None
+    url = f"https://api.github.com/repos/{GH_DATA_REPO}/contents/{path}"
+    data = json.dumps(payload).encode("utf-8") if payload else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "ChubWMS",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+def gh_download_file(filename, local_path):
+    """Download one file from GitHub to local disk."""
+    result = _gh_api("GET", filename)
+    if not result or "content" not in result:
+        return False
+    try:
+        content = base64.b64decode(result["content"])
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(content)
+        return True
+    except Exception:
+        return False
+
+def gh_upload_file(filename, local_path):
+    """Upload local file to GitHub (create or update)."""
+    if not GH_TOKEN or not GH_DATA_REPO:
+        return
+    try:
+        with open(local_path, "rb") as f:
+            content = base64.b64encode(f.read()).decode("ascii")
+        existing = _gh_api("GET", filename)
+        sha = existing.get("sha") if existing else None
+        payload = {"message": f"sync {filename}", "content": content}
+        if sha:
+            payload["sha"] = sha
+        _gh_api("PUT", filename, payload)
+    except Exception:
+        pass
+
+def gh_sync_on_startup():
+    """Download all data files from GitHub if not present locally."""
+    if not GH_TOKEN or not GH_DATA_REPO:
+        return
+    for fname, local_path in _DATA_FILES:
+        if not os.path.isfile(local_path):
+            gh_download_file(fname, local_path)
+
+def gh_push_file_async(local_path):
+    """Push a file to GitHub in a background thread (non-blocking)."""
+    if not GH_TOKEN or not GH_DATA_REPO:
+        return
+    filename = os.path.basename(local_path)
+    threading.Thread(target=gh_upload_file, args=(filename, local_path), daemon=True).start()
+
+# Run startup sync
+gh_sync_on_startup()
 
 
 # ---------------- helpers ----------------
@@ -78,6 +165,7 @@ def write_json(path, bak_path, data):
     backup_file(path, bak_path)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    gh_push_file_async(path)
 
 
 def save_uploaded_file(file_storage):
@@ -532,6 +620,7 @@ def save_scores_text(scores_dict):
         for cat in sorted(scores_dict.keys(), key=natural_key):
             score = scores_dict[cat]
             f.write(f"{cat}: {format_num(score) if score is not None else 'N/A'}\n")
+    gh_push_file_async(SCORES_FILE)
     return True
 
 
