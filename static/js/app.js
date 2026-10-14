@@ -842,12 +842,23 @@ function executeBuild() {
         method: "POST",
         body: fd
     })
-    .then(res => res.json())
-    .then(data => {
-        if (data.error) {
-            showStatusBanner("შეცდომა: " + data.error, "error");
-            return;
+    .then(async res => {
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch(e) {
+            if (!res.ok) {
+                throw new Error(`სერვერის შეცდომა (${res.status}): ${text.slice(0, 200)}`);
+            }
+            throw new Error("სერვერმა არასწორი პასუხი დააბრუნა.");
         }
+        if (!res.ok || data.error) {
+            throw new Error(data.error || `სერვერის შეცდომა (${res.status})`);
+        }
+        return data;
+    })
+    .then(data => {
         state = data;
         selectedBank = "";
         viewMode = "floor";
