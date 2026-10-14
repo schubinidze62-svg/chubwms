@@ -314,15 +314,15 @@ def col_letter(zero_based_index):
 
 # ---------------- locations ----------------
 def parse_loc_code(code):
-    text = clean_text(code)
-    m = re.search(r"^([01]?UR)_(\d+)_(\d+)_(\d+)", text)
+    text = clean_text(code).strip()
+    m = re.search(r"^([01]?UR|JR|DAB)_(\d+)_(\d+)_(\d+)", text, re.IGNORECASE)
     if m:
-        prefix = m.group(1)
+        prefix = m.group(1).upper()
         bank_num = int(m.group(2))
         bay = int(m.group(3))
         level = int(m.group(4))
-        full_bank = f"{prefix}_{bank_num}" if prefix != "UR" else f"UR_{bank_num}"
-        return full_bank, bank_num, bay, level, m.group(0)
+        full_bank = f"{prefix}_{bank_num}"
+        return full_bank, bank_num, bay, level, f"{prefix}_{bank_num}_{bay}_{level}"
     
     # Generic format: e.g. R1_5_2
     m2 = re.match(r"^([A-Za-z0-9]+)[_\-\s]+(\d+)[_\-\s]+(\d+)$", text)
@@ -644,6 +644,53 @@ def save_scores_text(scores_dict):
 
 
 # ---------------- excel readers ----------------
+def read_excel_fast(filepath):
+    """Fast Excel reader using calamine (Rust) with fallback to openpyxl/standard."""
+    try:
+        import python_calamine
+        return pd.read_excel(filepath, engine="calamine", dtype=str)
+    except Exception:
+        try:
+            return pd.read_excel(filepath, engine="openpyxl", dtype=str)
+        except Exception:
+            return pd.read_excel(filepath, dtype=str)
+
+
+def resolve_location_code(code, loc_codes):
+    """Normalize and resolve location code to match known loc_codes."""
+    text = clean_text(code).strip()
+    if not text:
+        return ""
+    if text in loc_codes:
+        return text
+    
+    text_upper = text.upper()
+    if text_upper in loc_codes:
+        return text_upper
+    
+    # Try JR_ -> 1UR_ or UR_
+    if text_upper.startswith("JR_"):
+        suffix = text_upper[3:]
+        if ("1UR_" + suffix) in loc_codes:
+            return "1UR_" + suffix
+        if ("UR_" + suffix) in loc_codes:
+            return "UR_" + suffix
+            
+    # Try UR_ -> 1UR_
+    if text_upper.startswith("UR_"):
+        suffix = text_upper[3:]
+        if ("1UR_" + suffix) in loc_codes:
+            return "1UR_" + suffix
+            
+    # Try 1UR_ -> UR_
+    if text_upper.startswith("1UR_"):
+        suffix = text_upper[4:]
+        if ("UR_" + suffix) in loc_codes:
+            return "UR_" + suffix
+
+    return text_upper if text_upper else text
+
+
 def looks_like_location(value):
     text = clean_text(value)
     if not text or len(text) > 120:
@@ -666,7 +713,7 @@ def looks_like_location(value):
 
 def load_locations_excel(filepath):
     try:
-        df = pd.read_excel(filepath, dtype=str)
+        df = read_excel_fast(filepath)
     except Exception as e:
         raise ValueError(f"Locations Excel ვერ წაიკითხა: {e}")
     if df.empty:
@@ -731,31 +778,44 @@ def build_inventory_std_code_best(df_inv, loc_codes):
     best_series_full = None
     best_series_sample = None
 
-    for col in df_inv.columns:
+    # Priority 1: Check known location column names first
+    priority_names = ["location code", "locationcode", "location", "loc", "std_code", "stdcode", "ლოკაცია", "ადგილი"]
+    found_priority = [c for c in df_inv.columns if any(p == str(c).strip().lower() for p in priority_names)]
+    check_cols = found_priority + [c for c in df_inv.columns if c not in found_priority]
+
+    for col in check_cols:
         s_sample = sample[col].astype(str).str.strip()
-        mask = s_sample.str.match(r"^[01]?UR_\d+_\d+_\d+", na=False)
-        if mask.sum() <= 0:
+        mask = s_sample.str.contains(r"^[01]?UR_\d+_\d+_\d+|^JR_\d+_\d+_\d+|^DAB_\d+_\d+_\d+", case=False, na=False)
+        if mask.sum() < 3 and col not in found_priority:
             continue
-        extracted = s_sample.str.extract(r"^([01]?UR_\d+_\d+_\d+)", expand=False)
-        std_sample = extracted.fillna(s_sample)
+        
+        # Test direct resolution with resolve_location_code
+        std_sample = s_sample.apply(lambda x: resolve_location_code(x, loc_codes))
         score = int(std_sample.isin(loc_codes).sum())
         if score > best_score:
             best_score = score
             best_desc = f"direct location column: {col}, matched sample={score}"
             s_full = df_inv[col].astype(str).str.strip()
-            extracted_full = s_full.str.extract(r"^([01]?UR_\d+_\d+_\d+)", expand=False)
-            best_series_full = extracted_full.fillna(s_full)
+            best_series_full = s_full.apply(lambda x: resolve_location_code(x, loc_codes))
             best_series_sample = std_sample
+            # Early return if over 25% or >= 50 matches - this is definitely the column!
+            if score >= min(50, int(len(sample) * 0.25)):
+                df_inv["Std_Code"] = best_series_full
+                return df_inv, best_desc, score
+
+    if best_score > 0 and best_series_full is not None:
+        df_inv["Std_Code"] = best_series_full
+        return df_inv, best_desc, best_score
 
     prefix_cols, numeric_cols = [], []
     for col in df_inv.columns:
         col_norm = normalize_text(col)
-        s = sample[col].dropna().astype(str).str.strip().head(1000)
+        s = sample[col].dropna().astype(str).str.strip().head(500)
         if s.empty:
             continue
-        prefix_hits = s.str.upper().str.match(r"^[01]?UR$", na=False).sum()
+        prefix_hits = s.str.upper().str.match(r"^[01]?(UR|JR|DAB)$", na=False).sum()
         prefix_name = any(w in col_norm for w in ["aisle", "zone", "row", "რიგი", "ზონა"])
-        if prefix_hits >= 5 or prefix_name:
+        if prefix_hits >= 3 or prefix_name:
             prefix_cols.append(col)
         numeric_clean = s.str.replace(r"\.0$", "", regex=True)
         numeric_hits = numeric_clean.str.match(r"^\d+$", na=False).sum()
@@ -767,8 +827,8 @@ def build_inventory_std_code_best(df_inv, loc_codes):
     if preferred_prefix:
         prefix_cols = preferred_prefix + [c for c in prefix_cols if c not in preferred_prefix]
 
-    numeric_cols = numeric_cols[:14]
-    prefix_cols = prefix_cols[:5]
+    numeric_cols = numeric_cols[:6]
+    prefix_cols = prefix_cols[:3]
 
     candidates = []
     if len(df_inv.columns) > 13:
@@ -803,6 +863,8 @@ def build_inventory_std_code_best(df_inv, loc_codes):
                 level_full = normalize_int_text_series(df_inv[level_c])
                 best_series_full = prefix_full + "_" + bank_full + "_" + bay_full + "_" + level_full
                 best_series_sample = std_sample
+                if score >= min(50, int(len(sample) * 0.25)):
+                    break
         except Exception:
             continue
 
@@ -921,7 +983,7 @@ def detect_barcode_col(df):
 
 def load_inventory_excel(filepath, loc_codes):
     try:
-        df_inv = pd.read_excel(filepath, dtype=str)
+        df_inv = read_excel_fast(filepath)
     except Exception as e:
         raise ValueError(f"Inventory Excel ვერ წაიკითხა: {e}")
 
@@ -946,7 +1008,6 @@ def load_inventory_excel(filepath, loc_codes):
         )
 
     barcode_col = detect_barcode_col(df_inv)
-    df_inv["Barcode"] = df_inv[barcode_col].apply(normalize_barcode)
 
     positive_qty_rows = int((df_inv["Available_Qty"] > 0).sum())
     matched_location_rows = int(df_inv["Std_Code"].astype(str).isin(loc_codes).sum())
@@ -959,14 +1020,19 @@ def load_inventory_excel(filepath, loc_codes):
             f"Barcode column: {barcode_col}"
         )
 
+    loc_list = df_inv["Std_Code"].fillna("").astype(str).str.strip().tolist()
+    bc_list = df_inv[barcode_col].fillna("").astype(str).str.strip().tolist()
+    qty_list = df_inv["Available_Qty"].tolist()
+
     stock = {}
-    for _, row in df_inv.iterrows():
-        loc = clean_text(row.get("Std_Code"))
-        barcode = normalize_barcode(row.get("Barcode"))
-        qty = safe_float(row.get("Available_Qty"), 0)
-        if not loc or not barcode:
+    for raw_loc, raw_bc, qty in zip(loc_list, bc_list, qty_list):
+        if not raw_loc or not raw_bc or qty <= 0:
             continue
-        stock[(loc, barcode)] = stock.get((loc, barcode), 0) + qty
+        bc = normalize_barcode(raw_bc)
+        if not bc:
+            continue
+        loc = resolve_location_code(raw_loc, loc_codes)
+        stock[(loc, bc)] = stock.get((loc, bc), 0) + qty
 
     needed_keys = set()
     for (_, barcode), qty in stock.items():
@@ -994,10 +1060,12 @@ def load_catalog_csv_subset(filepath, needed_keys):
             total = 0
             for chunk in pd.read_csv(filepath, dtype=str, header=None, usecols=[bc_col, cat_col], encoding=enc, chunksize=50000):
                 chunk.columns = ["__BARCODE", "__CATEGORY"]
-                for _, row in chunk.iterrows():
+                bcs = chunk["__BARCODE"].fillna("").astype(str).tolist()
+                cats = chunk["__CATEGORY"].fillna("").astype(str).tolist()
+                for raw_bc, raw_cat in zip(bcs, cats):
                     total += 1
-                    barcode = normalize_barcode(row.get("__BARCODE", ""))
-                    category = clean_text(row.get("__CATEGORY", ""))
+                    barcode = normalize_barcode(raw_bc)
+                    category = clean_text(raw_cat)
                     if not barcode or not category:
                         continue
                     variants = barcode_variants(barcode)
