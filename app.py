@@ -1084,92 +1084,94 @@ def load_catalog_csv_subset(filepath, needed_keys):
 
 
 def load_catalog_excel_subset_fast(filepath, needed_keys):
-    if load_workbook is None:
-        raise ValueError("openpyxl არ არის დაყენებული. გაუშვით: python -m pip install openpyxl")
-
-    ext = os.path.splitext(filepath)[1].lower()
-    if ext == ".xls":
-        raise ValueError("Catalog ფაილი არის ძველი .xls ფორმატი. შეინახეთ Excel-ში .xlsx ან .xlsm-ად და თავიდან ატვირთეთ.")
-
-    wb = load_workbook(filepath, read_only=True, data_only=True)
-    min_col = min(CATALOG_BARCODE_COL, CATALOG_CATEGORY_COL) + 1
-    max_col = max(CATALOG_BARCODE_COL, CATALOG_CATEGORY_COL) + 1
-    bc_pos = CATALOG_BARCODE_COL + 1 - min_col
-    cat_pos = CATALOG_CATEGORY_COL + 1 - min_col
-
-    best_sheet = None
-    best_score = -1
-    sheet_logs = []
-
-    try:
-        for ws in wb.worksheets[:20]:
-            barcode_hits = 0
-            category_values = set()
-            try:
-                for row in ws.iter_rows(min_row=1, max_row=500, min_col=min_col, max_col=max_col, values_only=True):
-                    barcode = normalize_barcode(row[bc_pos] if len(row) > bc_pos else "")
-                    category = clean_text(row[cat_pos] if len(row) > cat_pos else "")
-                    if barcode and re.fullmatch(r"\d{6,18}", barcode):
-                        barcode_hits += 1
-                    if category and not re.search(r"\d{6,18}", category):
-                        category_values.add(category)
-                score = barcode_hits * 10 + len(category_values)
-                sheet_logs.append(f"{ws.title}: barcode={barcode_hits}, categories={len(category_values)}, score={score}")
-                if score > best_score:
-                    best_score = score
-                    best_sheet = ws.title
-                if barcode_hits >= 20 and len(category_values) >= 5:
-                    best_sheet = ws.title
-                    break
-            except Exception as e:
-                sheet_logs.append(f"{ws.title}: ERROR {e}")
-    finally:
-        wb.close()
-
-    if not best_sheet:
-        raise ValueError("კატალოგში C/G სვეტებით სწორი sheet ვერ ვიპოვე.")
-
-    wb = load_workbook(filepath, read_only=True, data_only=True)
-    ws = wb[best_sheet]
+    bc_col = CATALOG_BARCODE_COL
+    cat_col = CATALOG_CATEGORY_COL
     catalog_map = {}
     found = 0
     scanned = 0
 
     try:
-        for row in ws.iter_rows(min_row=1, min_col=min_col, max_col=max_col, values_only=True):
-            scanned += 1
-            barcode = normalize_barcode(row[bc_pos] if len(row) > bc_pos else "")
-            category = clean_text(row[cat_pos] if len(row) > cat_pos else "")
-            if not barcode or not category:
-                continue
-            if normalize_text(category) in {"category", "cat", "კატეგორია", "ჯგუფი"}:
-                continue
-            if not re.fullmatch(r"\d{6,18}", barcode):
-                continue
-            variants = barcode_variants(barcode)
-            if needed_keys and not any(v in needed_keys for v in variants):
-                continue
-            for v in variants:
-                catalog_map[v] = category
-            found += 1
-            if needed_keys and needed_keys.issubset(set(catalog_map.keys())):
+        import python_calamine
+        wb = python_calamine.CalamineWorkbook.from_path(filepath)
+
+        # Prioritize sheets with 'კატალოგ' or 'catalog' directly by name
+        best_sheet = None
+        for name in wb.sheet_names:
+            if "კატალოგ" in name.lower() or "catalog" in name.lower():
+                best_sheet = name
                 break
-    finally:
-        wb.close()
+        if not best_sheet:
+            for name in wb.sheet_names:
+                if any(w in name.lower() for w in ["ბაზა", "base", "goods"]):
+                    best_sheet = name
+                    break
+        if not best_sheet and wb.sheet_names:
+            best_sheet = wb.sheet_names[0]
 
-    debug = (
-        f"Sheet={best_sheet}, C={col_letter(CATALOG_BARCODE_COL)}, G={col_letter(CATALOG_CATEGORY_COL)}, "
-        f"scanned={scanned}, found={found}, map_keys={len(catalog_map)}"
-    )
+        sheet = wb.get_sheet_by_name(best_sheet)
+        rows = sheet.to_python()
 
-    if not catalog_map:
-        raise ValueError(
-            "კატალოგიდან Inventory-ის ბარკოდები ვერ მოიძებნა.\n\n"
-            "შემოწმება: Catalog-ში ბარკოდი უნდა იყოს C სვეტში, კატეგორია G სვეტში.\n"
-            f"Sheet check: {' | '.join(sheet_logs[:8])}"
-        )
+        for r in rows:
+            scanned += 1
+            if len(r) <= cat_col:
+                continue
+            raw_bc = r[bc_col]
+            if not raw_bc:
+                continue
+            s_bc = str(raw_bc).strip()
+            if s_bc.endswith(".0"):
+                s_bc = s_bc[:-2]
+            if not s_bc:
+                continue
 
-    return catalog_map, debug
+            # Fast O(1) set lookup in needed_keys
+            if needed_keys and s_bc not in needed_keys and s_bc.lstrip("0") not in needed_keys:
+                continue
+
+            raw_cat = r[cat_col]
+            if not raw_cat:
+                continue
+            cat = clean_text(raw_cat)
+            if not cat or cat in {"კატეგორია", "category", "cat", "ჯგუფი"}:
+                continue
+
+            for v in barcode_variants(s_bc):
+                catalog_map[v] = cat
+            found += 1
+
+        debug = f"Sheet={best_sheet}, scanned={scanned}, found={found}, map_keys={len(catalog_map)}"
+        if not catalog_map:
+            raise ValueError(f"კატალოგიდან ბარკოდები ვერ მოიძებნა Sheet: {best_sheet}-ში (C/G სვეტები).")
+        return catalog_map, debug
+
+    except Exception as e:
+        if "ბარკოდები ვერ მოიძებნა" in str(e):
+            raise
+        if load_workbook is None:
+            raise ValueError(f"კატალოგის წაკითხვა ვერ მოხერხდა: {e}")
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            for row in ws.iter_rows(values_only=True):
+                scanned += 1
+                if len(row) <= cat_col:
+                    continue
+                raw_bc = row[bc_col] if len(row) > bc_col else ""
+                s_bc = str(raw_bc or "").strip().replace(".0", "")
+                if not s_bc or (needed_keys and s_bc not in needed_keys and s_bc.lstrip("0") not in needed_keys):
+                    continue
+                cat = clean_text(row[cat_col] if len(row) > cat_col else "")
+                if not cat or cat in {"კატეგორია", "category", "cat"}:
+                    continue
+                for v in barcode_variants(s_bc):
+                    catalog_map[v] = cat
+                found += 1
+                if needed_keys and needed_keys.issubset(set(catalog_map.keys())):
+                    break
+        finally:
+            wb.close()
+        debug = f"openpyxl fallback, scanned={scanned}, found={found}, map_keys={len(catalog_map)}"
+        return catalog_map, debug
 
 
 def load_catalog_for_needed_barcodes(filepath, needed_keys):
@@ -1439,8 +1441,12 @@ def api_build():
         report["messages"] = messages or ["მონაცემები განახლდა"]
         return jsonify(report)
 
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"სერვერის შეცდომა: {str(e)}"}), 500
 
 
 @app.route("/save_map", methods=["POST"])
