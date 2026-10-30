@@ -766,10 +766,10 @@ def load_locations_excel(filepath):
             "name": code,
             "std_code": code,
             "bank": full_bank or guess_bank(code),
-            "bay": parsed_bay if parsed_bay is not None else (i % 20),
-            "level": parsed_level if parsed_level is not None else (i // 20),
-            "row": parsed_level if parsed_level is not None else (i // 20),
-            "col": parsed_bay if parsed_bay is not None else (i % 20),
+            "bay": (parsed_bay if (parsed_bay is not None and 0 < parsed_bay <= 150) else 1),
+            "level": (parsed_level if (parsed_level is not None and 0 < parsed_level <= 20) else 1),
+            "row": (parsed_level if (parsed_level is not None and 0 < parsed_level <= 20) else 1),
+            "col": (parsed_bay if (parsed_bay is not None and 0 < parsed_bay <= 150) else 1),
         })
 
     if not locations:
@@ -1253,7 +1253,7 @@ def build_report():
     catalog = load_catalog()
     scores = load_scores()
 
-    locations = add_missing_inventory_locations(locations, stock)
+    # locations = add_missing_inventory_locations(locations, stock)  # ONLY use locations from user file
 
     location_score = {}
     location_qty = {}
@@ -1467,12 +1467,10 @@ def api_build():
         if catalog_file and catalog_file.filename:
             if not allowed_file(catalog_file.filename):
                 return jsonify({"error": "Catalog ფაილი უნდა იყოს Excel/CSV"}), 400
-            if not needed_keys:
-                return jsonify({"error": "Catalog-ისთვის ჯერ Inventory ატვირთეთ ან existing stock უნდა არსებობდეს."}), 400
             path = save_uploaded_file(catalog_file)
-            catalog, cat_debug = load_catalog_for_needed_barcodes(path, needed_keys)
+            catalog, cat_debug = load_catalog_for_needed_barcodes(path, None)
             save_catalog(catalog)
-            messages.append(f"კატალოგი: {len(catalog)} key")
+            messages.append(f"კატალოგი: {len(catalog)} ბარკოდი")
             messages.append(cat_debug)
 
         report = build_report()
