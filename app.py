@@ -53,8 +53,8 @@ SCORES_BAK = os.path.join(DATA_DIR, "category_scores.txt.bak")
 UPLOAD_FOLDER = os.path.join(DATA_DIR, "uploads")
 ALLOWED_EXTENSIONS = {"xlsx", "xlsm", "xls", "csv"}
 
-CATALOG_BARCODE_COL = 2  # C
-CATALOG_CATEGORY_COL = 6  # G
+CATALOG_BARCODE_COL = 0  # A - ბარკოდი (CATALOG UREKI: col 0)
+CATALOG_CATEGORY_COL = 5  # F - I დონე / კატეგორია (CATALOG UREKI: col 5)
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
@@ -1084,6 +1084,7 @@ def load_catalog_csv_subset(filepath, needed_keys):
 
 
 def load_catalog_excel_subset_fast(filepath, needed_keys):
+    """Reads catalog Excel using calamine iter_rows (streaming) to avoid OOM on large files."""
     bc_col = CATALOG_BARCODE_COL
     cat_col = CATALOG_CATEGORY_COL
     catalog_map = {}
@@ -1094,25 +1095,38 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
         import python_calamine
         wb = python_calamine.CalamineWorkbook.from_path(filepath)
 
-        # Prioritize sheets with 'კატალოგ' or 'catalog' directly by name
+        # Sheet priority: 'catalogue' exact → contains 'catalog'/'კატალოგ' → 'base'/'ბაზა' → first sheet
         best_sheet = None
         for name in wb.sheet_names:
-            if "კატალოგ" in name.lower() or "catalog" in name.lower():
+            nl = name.lower()
+            if nl == "catalogue" or nl == "catalog":
                 best_sheet = name
                 break
         if not best_sheet:
             for name in wb.sheet_names:
-                if any(w in name.lower() for w in ["ბაზა", "base", "goods"]):
+                nl = name.lower()
+                if "catalog" in nl or "კატალოგ" in nl:
+                    best_sheet = name
+                    break
+        if not best_sheet:
+            for name in wb.sheet_names:
+                nl = name.lower()
+                if any(w in nl for w in ["ბაზა", "base", "goods"]):
                     best_sheet = name
                     break
         if not best_sheet and wb.sheet_names:
             best_sheet = wb.sheet_names[0]
 
         sheet = wb.get_sheet_by_name(best_sheet)
-        rows = sheet.to_python()
 
-        for r in rows:
+        # ---- STREAMING with iter_rows — never materializes all rows at once ----
+        first_row = True
+        for r in sheet.iter_rows():
             scanned += 1
+            # Skip header row
+            if first_row:
+                first_row = False
+                continue
             if len(r) <= cat_col:
                 continue
             raw_bc = r[bc_col]
@@ -1124,7 +1138,7 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
             if not s_bc:
                 continue
 
-            # Fast O(1) set lookup in needed_keys
+            # Fast O(1) set lookup
             if needed_keys and s_bc not in needed_keys and s_bc.lstrip("0") not in needed_keys:
                 continue
 
@@ -1132,7 +1146,7 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
             if not raw_cat:
                 continue
             cat = clean_text(raw_cat)
-            if not cat or cat in {"კატეგორია", "category", "cat", "ჯგუფი"}:
+            if not cat or cat.lower() in {"კატეგორია", "category", "cat", "ჯგუფი", "i დონე"}:
                 continue
 
             for v in barcode_variants(s_bc):
@@ -1141,7 +1155,7 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
 
         debug = f"Sheet={best_sheet}, scanned={scanned}, found={found}, map_keys={len(catalog_map)}"
         if not catalog_map:
-            raise ValueError(f"კატალოგიდან ბარკოდები ვერ მოიძებნა Sheet: {best_sheet}-ში (C/G სვეტები).")
+            raise ValueError(f"კატალოგიდან ბარკოდები ვერ მოიძებნა Sheet: {best_sheet}-ში (col{bc_col}/col{cat_col}).")
         return catalog_map, debug
 
     except Exception as e:
@@ -1149,10 +1163,15 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
             raise
         if load_workbook is None:
             raise ValueError(f"კატალოგის წაკითხვა ვერ მოხერხდა: {e}")
+        # openpyxl fallback — row-by-row streaming (read_only mode)
         wb = load_workbook(filepath, read_only=True, data_only=True)
         try:
             ws = wb.active
+            first_row = True
             for row in ws.iter_rows(values_only=True):
+                if first_row:
+                    first_row = False
+                    continue
                 scanned += 1
                 if len(row) <= cat_col:
                     continue
@@ -1161,13 +1180,11 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
                 if not s_bc or (needed_keys and s_bc not in needed_keys and s_bc.lstrip("0") not in needed_keys):
                     continue
                 cat = clean_text(row[cat_col] if len(row) > cat_col else "")
-                if not cat or cat in {"კატეგორია", "category", "cat"}:
+                if not cat or cat.lower() in {"კატეგორია", "category", "cat"}:
                     continue
                 for v in barcode_variants(s_bc):
                     catalog_map[v] = cat
                 found += 1
-                if needed_keys and needed_keys.issubset(set(catalog_map.keys())):
-                    break
         finally:
             wb.close()
         debug = f"openpyxl fallback, scanned={scanned}, found={found}, map_keys={len(catalog_map)}"
