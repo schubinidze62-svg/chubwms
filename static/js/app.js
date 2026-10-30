@@ -17,7 +17,7 @@ let state = {
 
 // UI State
 let activeTab = "mapPage";
-let viewMode = "floor"; // "floor" (All banks), "matrix" (Rack elevation), "list" (Cards)
+let viewMode = "matrix"; // "floor" (All banks), "matrix" (Rack elevation), "list" (Cards)
 let selectedBank = "";
 let searchQuery = "";
 let selectedColor = "";
@@ -213,19 +213,19 @@ function renderActiveMapView() {
     const container = document.getElementById("mapContainer");
     if (!container) return;
 
-    if (viewMode === "floor" || !selectedBank) {
-        renderFloorPlan(container);
-    } else if (viewMode === "matrix") {
+    if (viewMode === "list") {
+        renderClassicList(container);
+    } else if (selectedBank) {
         renderRackMatrix(container);
     } else {
-        renderClassicList(container);
+        renderRackDirectory(container);
     }
 }
 
 // ==========================================
-// View 1: Floor Plan Overview (All Banks) — Real 2D Visual Map
+// View 1: Racks Directory (All Banks Overview)
 // ==========================================
-function renderFloorPlan(container) {
+function renderRackDirectory(container) {
     container.innerHTML = "";
     const banks = state.banks || [];
     const summary = state.banks_summary || {};
@@ -234,142 +234,83 @@ function renderFloorPlan(container) {
         container.innerHTML = `
             <div style="padding: 40px; text-align: center; color: var(--text-muted);">
                 <h3>საწყობის მონაცემები ჯერ არ არის ატვირთული</h3>
-                <p style="margin-top: 8px;">დააჭირეთ <b>"🚀 რუკის აგება"</b>-ს Excel-ის ასატვირთად ან <b>"🧪 დემო საწყობის ჩატვირთვა"</b>-ს საჩვენებელი მონაცემებისთვის.</p>
+                <p style="margin-top: 8px;">დააჭირეთ <b>"🚀 რუკის აგება"</b>-ს Excel-ის ასატვირთად.</p>
             </div>
         `;
         return;
     }
 
-    // Build a fast lookup: bank -> Map of "bay_level" -> loc
-    const bankLocMap = {};
-    const bankDims = {}; // bank -> {maxBay, maxLevel}
-    (state.locations || []).forEach(loc => {
-        const b = loc.bank || "";
-        if (!b) return;
-        if (!bankLocMap[b]) { bankLocMap[b] = new Map(); bankDims[b] = {maxBay: 1, maxLevel: 1}; }
-        const bay = Number(loc.bay || 1);
-        const level = Number(loc.level || 1);
-        if (bay > bankDims[b].maxBay) bankDims[b].maxBay = bay;
-        if (level > bankDims[b].maxLevel) bankDims[b].maxLevel = level;
-        bankLocMap[b].set(`${bay}_${level}`, loc);
-    });
-
-    // Filter state
     const srch = searchQuery.toLowerCase();
-
-    const outerWrap = document.createElement("div");
-    outerWrap.className = "visual-floorplan";
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; padding: 6px 0;";
 
     banks.forEach(bankName => {
         const bs = summary[bankName] || { total_locations: 0, occupied: 0, empty: 0, total_qty: 0, status_counts: {} };
-        const locMap = bankLocMap[bankName] || new Map();
-        const dims = bankDims[bankName] || { maxBay: 1, maxLevel: 1 };
-
-        const bankCard = document.createElement("div");
-        bankCard.className = "vf-bank";
-
-        // Header — click to open rack matrix
-        const header = document.createElement("div");
-        header.className = "vf-bank-header";
-        header.innerHTML = `
-            <span class="vf-bank-name" title="თაროს გახსნა">${escapeHtml(bankName)}</span>
-            <span class="vf-bank-info">${bs.occupied}/${bs.total_locations}</span>
-        `;
-        header.addEventListener("click", () => selectBankAndOpenRack(bankName));
-        bankCard.appendChild(header);
-
-        // Mini grid: rows = levels (top to bottom descending), cols = bays
-        const gridEl = document.createElement("div");
-        gridEl.className = "vf-grid";
-        gridEl.style.gridTemplateColumns = `repeat(${dims.maxBay}, 1fr)`;
-
-        for (let lvl = dims.maxLevel; lvl >= 1; lvl--) {
-            for (let bay = 1; bay <= dims.maxBay; bay++) {
-                const cell = document.createElement("div");
-                const loc = locMap.get(`${bay}_${lvl}`);
-
-                if (loc) {
-                    let status = loc.status || "gray";
-                    // Apply search highlight
-                    const matchesSrch = srch ? locationMatchesSearch(loc, srch) : false;
-                    const dimmed = (selectedColor && status !== selectedColor) ||
-                                   (onlyOccupied && Number(loc.qty || 0) === 0);
-
-                    cell.className = "vf-cell " + status;
-                    if (dimmed) cell.style.opacity = "0.15";
-                    if (matchesSrch) cell.classList.add("vf-cell-highlight");
-
-                    cell.title = `${loc.name || loc.std_code}\nBay ${bay} / Level ${lvl}\nQty: ${formatNum(loc.qty || 0)}`;
-                    cell.addEventListener("click", (e) => {
-                        e.stopPropagation();
-                        openLocationDrawer(loc.std_code || loc.name);
-                    });
-                } else {
-                    cell.className = "vf-cell vf-cell-empty";
-                    cell.style.opacity = "0";
-                }
-                gridEl.appendChild(cell);
-            }
-        }
-
-        bankCard.appendChild(gridEl);
-
-        // Footer bar: occupancy
-        const total = bs.total_locations || 1;
+        const total = bs.total_locations || 0;
         const occ = bs.occupied || 0;
-        const occPct = Math.round((occ / total) * 100);
-        const footer = document.createElement("div");
-        footer.className = "vf-bank-footer";
-        footer.innerHTML = `<div class="vf-occ-bar"><div class="vf-occ-fill" style="width:${occPct}%"></div></div>`;
-        bankCard.appendChild(footer);
+        const pct = total > 0 ? Math.round((occ / total) * 100) : 0;
+        const counts = bs.status_counts || {};
 
-        outerWrap.appendChild(bankCard);
+        if (srch && !bankName.toLowerCase().includes(srch)) return;
+
+        const card = document.createElement("div");
+        card.className = "vf-bank";
+        card.style.cssText = "cursor: pointer; padding: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-card); transition: all 0.2s ease; display: flex; flex-direction: column; gap: 10px;";
+        card.onmouseenter = () => card.style.borderColor = "var(--primary)";
+        card.onmouseleave = () => card.style.borderColor = "var(--border)";
+        card.onclick = () => selectBankAndOpenRack(bankName);
+
+        card.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 16px; font-weight: 800; color: var(--text-main); margin: 0;">🏭 რიგი: ${escapeHtml(bankName)}</h3>
+                <span style="font-size: 12px; font-weight: 700; color: var(--primary); background: rgba(59,130,246,0.1); padding: 2px 8px; border-radius: 6px;">${occ} / ${total}</span>
+            </div>
+            <div>
+                <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">
+                    <span>დატვირთულობა</span>
+                    <span><b>${pct}%</b></span>
+                </div>
+                <div style="height: 6px; width: 100%; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
+                    <div style="height: 100%; width: ${pct}%; background: ${pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981'}; border-radius: 4px;"></div>
+                </div>
+            </div>
+            <div style="display: flex; gap: 8px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 8px;">
+                <span>🟢 ${counts.green || 0}</span>
+                <span>🟡 ${counts.yellow || 0}</span>
+                <span>🔴 ${counts.red || 0}</span>
+                <span style="margin-left: auto; color: var(--primary); font-weight: 600;">თაროს ნახვა ➔</span>
+            </div>
+        `;
+        wrap.appendChild(card);
     });
 
-    container.appendChild(outerWrap);
-}
-
-function selectBankAndOpenRack(bankName) {
-    selectedBank = bankName;
-    const bankSelect = document.getElementById("bankFilter");
-    if (bankSelect) bankSelect.value = bankName;
-    if (bankName) {
-        setViewMode("matrix");
-    } else {
-        setViewMode("floor");
-    }
+    container.appendChild(wrap);
 }
 
 // ==========================================
-// View 2: Rack Elevation Matrix (Bay × Level)
+// View 2: Rack Elevation Matrix (Bay x Level)
 // ==========================================
 function renderRackMatrix(container) {
     container.innerHTML = "";
-
     const bankName = selectedBank;
     if (!bankName) {
-        renderFloorPlan(container);
+        renderRackDirectory(container);
         return;
     }
 
-    // Filter locations for this bank
     let bankLocations = (state.locations || []).filter(l => (l.bank || "") === bankName);
     if (bankLocations.length === 0) {
         container.innerHTML = `<div style="padding: 30px; color: var(--text-muted);">რიგში "${escapeHtml(bankName)}" ლოკაციები არ მოიძებნა.</div>`;
         return;
     }
 
-    // Find dimensions
-    let maxBay = 1;
-    let maxLevel = 1;
-    const locMap = new Map();
+    // Exact real bays and levels that genuinely exist in this rack (no phantom columns)
+    const uniqueBays = [...new Set(bankLocations.map(l => Number(l.bay || 0)).filter(b => b > 0))].sort((a, b) => a - b);
+    const uniqueLevels = [...new Set(bankLocations.map(l => Number(l.level || 0)).filter(lvl => lvl > 0 && lvl <= 20))].sort((a, b) => b - a);
 
+    const locMap = new Map();
     bankLocations.forEach(loc => {
-        const bay = Number(loc.bay || 0);
-        const level = Number(loc.level || 0);
-        if (bay > maxBay) maxBay = bay;
-        if (level > maxLevel) maxLevel = level;
-        locMap.set(`${bay}_${level}`, loc);
+        locMap.set(`${Number(loc.bay || 0)}_${Number(loc.level || 0)}`, loc);
     });
 
     const wrapper = document.createElement("div");
@@ -378,31 +319,38 @@ function renderRackMatrix(container) {
     const card = document.createElement("div");
     card.className = "rack-elevation-card";
 
+    // Bank switcher dropdown options
+    const banks = state.banks || [];
+    let bankOptionsHtml = banks.map(b => `<option value="${escapeHtml(b)}" ${b === bankName ? "selected" : ""}>რიგი: ${escapeHtml(b)}</option>`).join("");
+
     // Header info
     card.innerHTML = `
-        <div class="rack-title-row">
+        <div class="rack-title-row" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
             <div>
-                <h2 style="font-size: 18px; font-weight: 800; color: var(--text-main); margin-bottom: 4px;">
+                <h2 style="font-size: 20px; font-weight: 800; color: var(--text-main); margin-bottom: 4px;">
                     🏭 თაროს მატრიცა — რიგი: <span style="color: var(--primary);">${escapeHtml(bankName)}</span>
                 </h2>
-                <div style="font-size: 12px; color: var(--text-muted);">
-                    სექციები (Bays): <b>1 – ${maxBay}</b> · იარუსები (Levels): <b>1 – ${maxLevel}</b> · სულ ლოკაცია: <b>${bankLocations.length}</b>
+                <div style="font-size: 13px; color: var(--text-muted);">
+                    სექციები (Bays): <b>${uniqueBays.length} ცალი</b> (${uniqueBays[0] || 0} – ${uniqueBays[uniqueBays.length - 1] || 0}) · იარუსები: <b>${uniqueLevels.length} დონე</b> · სულ ლოკაცია: <b>${bankLocations.length}</b>
                 </div>
             </div>
-            <div style="display: flex; gap: 8px;">
-                <button class="btn btn-sm" onclick="selectBankAndOpenRack('')">⟨ ყველა რიგის ხედი</button>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <select id="quickBankSelect" onchange="selectBankAndOpenRack(this.value)" style="padding: 6px 12px; font-weight: 700; border-radius: 8px; border: 1px solid var(--border);">
+                    ${bankOptionsHtml}
+                </select>
+                <button class="btn btn-sm" onclick="selectBankAndOpenRack('')">⟨ ყველა რიგის სია</button>
             </div>
         </div>
     `;
 
-    // Table builder: Rows = Levels (from maxLevel down to 1), Cols = Bays (1 to maxBay)
+    // Table builder: Rows = uniqueLevels, Cols = uniqueBays
     const table = document.createElement("table");
     table.className = "rack-grid-table";
 
     const tbody = document.createElement("tbody");
 
     // Render levels from top to bottom
-    for (let lvl = maxLevel; lvl >= 1; lvl--) {
+    uniqueLevels.forEach(lvl => {
         const tr = document.createElement("tr");
 
         // Level label on left
@@ -411,8 +359,8 @@ function renderRackMatrix(container) {
         th.textContent = `იარუსი ${lvl}`;
         tr.appendChild(th);
 
-        // Cells for each bay
-        for (let bay = 1; bay <= maxBay; bay++) {
+        // Cells for each real bay
+        uniqueBays.forEach(bay => {
             const td = document.createElement("td");
             const loc = locMap.get(`${bay}_${lvl}`);
 
@@ -420,26 +368,26 @@ function renderRackMatrix(container) {
                 const cell = createRackCellElement(loc);
                 td.appendChild(cell);
             } else {
-                td.innerHTML = `<div style="width:90px; height:68px; border:1px dashed #e2e8f0; border-radius:8px; opacity:0.3;"></div>`;
+                td.innerHTML = `<div style="width:90px; height:68px; border:1px dashed #e2e8f0; border-radius:8px; opacity:0.15;"></div>`;
             }
 
             tr.appendChild(td);
-        }
+        });
 
         tbody.appendChild(tr);
-    }
+    });
 
-    // Bottom row: Bay numbers header
+    // Bottom row: Bay numbers header (matching exact bays)
     const tfoot = document.createElement("tr");
     const emptyCorner = document.createElement("td");
     tfoot.appendChild(emptyCorner);
 
-    for (let bay = 1; bay <= maxBay; bay++) {
+    uniqueBays.forEach(bay => {
         const th = document.createElement("th");
         th.className = "rack-bay-header";
         th.textContent = `Bay ${bay}`;
         tfoot.appendChild(th);
-    }
+    });
     tbody.appendChild(tfoot);
 
     table.appendChild(tbody);
