@@ -14,9 +14,21 @@ from werkzeug.utils import secure_filename
 
 import sys
 if sys.platform == "win32":
+    if sys.stdout is None:
+        try:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        except Exception:
+            pass
+    if sys.stderr is None:
+        try:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+        except Exception:
+            pass
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
+        if sys.stdout is not None:
+            sys.stdout.reconfigure(encoding="utf-8")
+        if sys.stderr is not None:
+            sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
@@ -1142,11 +1154,20 @@ def load_catalog_excel_subset_fast(filepath, needed_keys):
             if needed_keys and s_bc not in needed_keys and s_bc.lstrip("0") not in needed_keys:
                 continue
 
-            raw_cat = r[cat_col]
-            if not raw_cat:
-                continue
-            cat = clean_text(raw_cat)
-            if not cat or cat.lower() in {"კატეგორია", "category", "cat", "ჯგუფი", "i დონე"}:
+            # Smart Category Extraction for CATALOG UREKI & other formats:
+            # Col 7 = III დონე (მაისური, შარვალი, ქურთუკი, კაბა, დახურული ფეხსაცმელი...)
+            # Col 6 = IV დონე
+            # Col 5 = I დონე (ტანსაცმელი, ფეხსაცმელი...)
+            cat = ""
+            if len(r) > 7:
+                c7 = clean_text(r[7])
+                c6 = clean_text(r[6]) if len(r) > 6 else ""
+                c5 = clean_text(r[5]) if len(r) > 5 else ""
+                cat = c7 or c6 or c5
+            elif len(r) > cat_col:
+                cat = clean_text(r[cat_col])
+
+            if not cat or cat.lower() in {"კატეგორია", "category", "cat", "ჯგუფი", "i დონე", "iii დონე", "iv დონე"}:
                 continue
 
             for v in barcode_variants(s_bc):
@@ -1571,12 +1592,27 @@ def api_sample_data():
 
 
 def main():
-    print("=====================================================")
-    print("Warehouse WMS Map Server is Running!")
-    print("Open in browser: http://127.0.0.1:5000")
-    print("=====================================================")
-    app.run(debug=False, host="0.0.0.0", port=5000, use_reloader=False)
+    import socket as _sock
+    try:
+        local_ip = _sock.gethostbyname(_sock.gethostname())
+    except Exception:
+        local_ip = "?.?.?.?"
+    print("=" * 55)
+    print("  WMS.UREKI - Sawyobis Martva")
+    print("=" * 55)
+    print(f"  Am kompshi:  http://wms.ureki  an  http://127.0.0.1")
+    print(f"  Qselidan:    http://wms.ureki  an  http://{local_ip}")
+    print(f"  Port 5000:   http://{local_ip}:5000")
+    print("=" * 55)
 
+    def run_p80():
+        try:
+            app.run(debug=False, host="0.0.0.0", port=80, use_reloader=False)
+        except Exception as e:
+            print(f"Port 80 error: {e}")
+
+    threading.Thread(target=run_p80, daemon=True).start()
+    app.run(debug=False, host="0.0.0.0", port=5000, use_reloader=False)
 
 if __name__ == "__main__":
     main()
