@@ -2,7 +2,7 @@
 <html lang="ka">
 <head>
     <meta charset="utf-8">
-    <title>საწყობის WMS რუკა და მართვა</title>
+    <title>WMS.UREKI — საწყობის მართვა</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -11,7 +11,7 @@
     <!-- Topbar -->
     <header class="topbar">
         <div class="topbar-brand">
-            <h1>🏭 ChubWMS — საწყობის ვებ რუკა</h1>
+            <h1>🏭 WMS.UREKI — საწყობის მართვა</h1>
             <div class="sub">თაროების 2D მატრიცა (Bay × Level), დატვირთულობის ანალიზი და პროდუქციის ლოკაციები</div>
         </div>
         <div class="topbar-actions">
@@ -58,7 +58,7 @@
                 <div class="value" id="statRed">-</div>
             </div>
             <div class="stat-card">
-                <div class="label">კატალოგის გასაღებები</div>
+                <div class="label">ბარკოდები კატალოგში</div>
                 <div class="value" id="statCatalog">-</div>
             </div>
         </section>
@@ -111,14 +111,11 @@
                 <!-- Controls Bar: View Mode Switcher & Legend -->
                 <div class="map-controls-bar">
                     <div class="view-mode-toggle">
-                        <button class="view-mode-btn active" data-mode="floor" onclick="setViewMode('floor')">
-                            🏢 საწყობის გეგმა (Floorplan)
-                        </button>
-                        <button class="view-mode-btn" data-mode="matrix" onclick="setViewMode('matrix')">
+                        <button class="view-mode-btn active" data-mode="matrix" onclick="setViewMode('matrix')">
                             🧱 თაროს მატრიცა (Bay × Level)
                         </button>
                         <button class="view-mode-btn" data-mode="list" onclick="setViewMode('list')">
-                            📋 ბარათების სია
+                            📋 ლოკაციების სია
                         </button>
                     </div>
 
